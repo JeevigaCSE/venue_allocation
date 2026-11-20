@@ -7,7 +7,8 @@ import {
   User,
   Menu,
   X,
-  ChevronRight
+  ChevronRight,
+  CalendarCheck
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 
@@ -58,6 +59,19 @@ export default function Navbar({ activeTab, onTabChange }) {
               >
                 <Layers className="w-4 h-4" />
                 <span>Departments & Rooms</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleNavClick('my-bookings')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all ${
+                  activeTab === 'my-bookings'
+                    ? 'bg-slate-800 text-indigo-400 border border-slate-700 shadow-sm'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+                }`}
+              >
+                <CalendarCheck className="w-4 h-4" />
+                <span>My Bookings</span>
               </button>
 
               {isAdmin && (
@@ -172,6 +186,22 @@ export default function Navbar({ activeTab, onTabChange }) {
               <span className="flex items-center gap-2">
                 <Layers className="w-4 h-4" />
                 Departments & Rooms
+              </span>
+              <ChevronRight className="w-4 h-4 text-slate-500" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleNavClick('my-bookings')}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium ${
+                activeTab === 'my-bookings'
+                  ? 'bg-slate-800 text-indigo-400'
+                  : 'text-slate-300 hover:bg-slate-800/60'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <CalendarCheck className="w-4 h-4" />
+                My Bookings
               </span>
               <ChevronRight className="w-4 h-4 text-slate-500" />
             </button>

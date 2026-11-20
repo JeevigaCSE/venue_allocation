@@ -20,7 +20,9 @@ import {
   ChevronRight,
   Filter,
   Check,
-  Info
+  Info,
+  ShieldCheck,
+  Send
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -60,11 +62,17 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
   // State: Book Room Modal
   const [bookingModalRoom, setBookingModalRoom] = useState(null)
   const [bookDate, setBookDate] = useState(getTodayString())
-  const [bookStartTime, setBookStartTime] = useState('09:00')
-  const [bookEndTime, setBookEndTime] = useState('10:00')
+  const [bookStartTime, setBookStartTime] = useState('10:00')
+  const [bookEndTime, setBookEndTime] = useState('11:00')
   const [bookPurpose, setBookPurpose] = useState('')
   const [bookingError, setBookingError] = useState(null)
   const [submittingBooking, setSubmittingBooking] = useState(false)
+
+  // Conflict & Admin Override State
+  const [conflictDetected, setConflictDetected] = useState(false)
+  const [showOverrideForm, setShowOverrideForm] = useState(false)
+  const [priorityReason, setPriorityReason] = useState('')
+  const [submittingOverride, setSubmittingOverride] = useState(false)
 
   // State: Admin Add/Edit Room Modal
   const [isRoomModalOpen, setIsRoomModalOpen] = useState(false)
@@ -201,7 +209,6 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
   const getBookingsForDate = (roomId, dateStr) => {
     return bookings.filter((b) => {
       if (b.room_id !== roomId) return false
-      // Extract local YYYY-MM-DD from start_time
       const startDate = new Date(b.start_time)
       const year = startDate.getFullYear()
       const month = String(startDate.getMonth() + 1).padStart(2, '0')
@@ -221,12 +228,16 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
     setBookEndTime('11:00')
     setBookPurpose('')
     setBookingError(null)
+    setConflictDetected(false)
+    setShowOverrideForm(false)
+    setPriorityReason('')
   }
 
   const handleBookingSubmit = async (e) => {
     e.preventDefault()
     if (!bookingModalRoom) return
     setBookingError(null)
+    setConflictDetected(false)
 
     if (!bookDate || !bookStartTime || !bookEndTime) {
       setBookingError('Please enter date, start time, and end time.')
@@ -238,7 +249,6 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
       return
     }
 
-    // Parse into Date objects
     const startObj = new Date(`${bookDate}T${bookStartTime}:00`)
     const endObj = new Date(`${bookDate}T${bookEndTime}:00`)
 
@@ -247,13 +257,11 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
       return
     }
 
-    // Validation: end_time > start_time
     if (endObj <= startObj) {
       setBookingError('End time must be strictly after the start time.')
       return
     }
 
-    // Validation: prevent booking in the past
     const now = new Date()
     if (endObj <= now) {
       setBookingError('Cannot schedule a room reservation in the past.')
@@ -283,8 +291,9 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
           error.message?.toLowerCase().includes('overlapping') ||
           error.message?.toLowerCase().includes('exclude')
         ) {
+          setConflictDetected(true)
           setBookingError(
-            'This room is already booked during the selected time slot. Please choose another time.'
+            'This room is already booked during the selected time slot. Please choose another time, or submit an Admin Override Request if this is an urgent priority.'
           )
           return
         }
@@ -302,6 +311,50 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
       setBookingError(err.message || 'An unexpected error occurred while saving booking.')
     } finally {
       setSubmittingBooking(false)
+    }
+  }
+
+  // Submit Override Request when conflict exists
+  const handleSubmitOverrideRequest = async (e) => {
+    e.preventDefault()
+    if (!priorityReason.trim()) {
+      setBookingError('Please provide a justification for this priority override.')
+      return
+    }
+
+    const startObj = new Date(`${bookDate}T${bookStartTime}:00`)
+    const endObj = new Date(`${bookDate}T${bookEndTime}:00`)
+
+    setSubmittingOverride(true)
+    try {
+      const { error } = await supabase
+        .from('override_requests')
+        .insert([
+          {
+            room_id: bookingModalRoom.id,
+            requester_id: user.id,
+            purpose: bookPurpose.trim(),
+            priority_reason: priorityReason.trim(),
+            start_time: startObj.toISOString(),
+            end_time: endObj.toISOString(),
+            status: 'pending'
+          }
+        ])
+
+      if (error) throw error
+
+      setFeedback({
+        type: 'success',
+        message: 'Priority override request submitted to administrators for review.'
+      })
+      setBookingModalRoom(null)
+      setConflictDetected(false)
+      setShowOverrideForm(false)
+      setPriorityReason('')
+    } catch (err) {
+      setBookingError(`Failed to submit override request: ${err.message}`)
+    } finally {
+      setSubmittingOverride(false)
     }
   }
 
@@ -362,7 +415,6 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
     setSubmittingRoomModal(true)
     try {
       if (editingRoom) {
-        // Edit Room
         const { error } = await supabase
           .from('rooms')
           .update({
@@ -379,7 +431,6 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
           message: `Room "${roomName}" updated successfully.`
         })
       } else {
-        // Add Room
         const { error } = await supabase.from('rooms').insert([
           {
             department_id: department.id,
@@ -672,7 +723,6 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
             const activeBookingNow = getActiveBookingNow(room.id)
             const dateBookings = getBookingsForDate(room.id, selectedDate)
 
-            // Room Type Color Badge
             const typeBadgeColor =
               room.type === 'Hall'
                 ? 'bg-blue-50 text-blue-700 border-blue-200'
@@ -847,7 +897,7 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
       )}
 
       {/* ===================================================================== */}
-      {/* MODAL: BOOK ROOM */}
+      {/* MODAL: BOOK ROOM (With Conflict & Admin Override Support) */}
       {/* ===================================================================== */}
       {bookingModalRoom && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
@@ -883,6 +933,67 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
               </div>
             )}
 
+            {/* Conflict Detected & Override Request Option */}
+            {conflictDetected && (
+              <div className="mx-6 mt-3 p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs">
+                <div className="flex items-start gap-2.5">
+                  <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="font-bold text-amber-900">Room Is Currently Occupied</p>
+                    <p className="mt-0.5 text-amber-800 leading-relaxed">
+                      Another department session or faculty event is already scheduled for this slot. If this is an urgent college necessity (e.g. university exam, statutory inspection), you may submit an Admin Override Request.
+                    </p>
+
+                    {!showOverrideForm ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowOverrideForm(true)}
+                        className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg shadow-sm transition"
+                      >
+                        <ShieldCheck className="w-4 h-4" />
+                        <span>Request Admin Override</span>
+                      </button>
+                    ) : (
+                      <form onSubmit={handleSubmitOverrideRequest} className="mt-3 pt-3 border-t border-amber-200 space-y-3">
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-amber-900 mb-1">
+                            Priority Justification / Reason
+                          </label>
+                          <textarea
+                            required
+                            rows={3}
+                            value={priorityReason}
+                            onChange={(e) => setPriorityReason(e.target.value)}
+                            placeholder="State the urgency (e.g., Scheduled University Semester Exam, NAAC Peer Inspection, Department HOD meeting)..."
+                            className="w-full p-2.5 bg-white border border-amber-300 rounded-lg text-slate-900 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-600"
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowOverrideForm(false)}
+                            className="px-3 py-1.5 text-xs font-semibold text-amber-800 hover:text-amber-900"
+                          >
+                            Cancel Request
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={submittingOverride}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg shadow-sm transition disabled:opacity-50"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>{submittingOverride ? 'Submitting...' : 'Submit Override Request'}</span>
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Standard Booking Form */}
             <form onSubmit={handleBookingSubmit} className="p-6 space-y-4">
               {/* Date */}
               <div>
@@ -959,7 +1070,7 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
                 </button>
                 <button
                   type="submit"
-                  disabled={submittingBooking}
+                  disabled={submittingBooking || conflictDetected}
                   className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-xl shadow-md transition disabled:opacity-50"
                 >
                   {submittingBooking ? 'Reserving...' : 'Confirm Reservation'}

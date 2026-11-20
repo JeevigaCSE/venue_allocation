@@ -36,7 +36,7 @@ const BLOCK_THEMES = [
   { from: 'from-slate-700', to: 'to-slate-900', text: 'text-slate-700', bg: 'bg-slate-50', border: 'border-slate-300' }
 ]
 
-export default function DepartmentsPage() {
+export default function DepartmentsPage({ resetTrigger }) {
   const { profile, isAdmin } = useAuth()
 
   // Departments & Rooms State
@@ -48,6 +48,13 @@ export default function DepartmentsPage() {
 
   // Navigation State: Selected Department for Detail View
   const [selectedDept, setSelectedDept] = useState(null)
+
+  // Reset detail view when Navbar "Departments & Rooms" tab is clicked
+  useEffect(() => {
+    if (resetTrigger) {
+      setSelectedDept(null)
+    }
+  }, [resetTrigger])
 
   // Modal States for Admin
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
@@ -62,7 +69,7 @@ export default function DepartmentsPage() {
   const [deptOrder, setDeptOrder] = useState(0)
 
   // Load Departments and their Room counts
-  const loadDepartments = async () => {
+  const loadDepartments = async (preserveSelected = false) => {
     setLoading(true)
     setFetchError(null)
 
@@ -101,10 +108,12 @@ export default function DepartmentsPage() {
 
       setDepartments(merged)
 
-      // If a department is currently selected, refresh its details
-      if (selectedDept) {
-        const updated = merged.find((m) => m.id === selectedDept.id)
-        if (updated) setSelectedDept(updated)
+      // Only refresh selected dept details if explicitly requested
+      if (preserveSelected) {
+        setSelectedDept((prev) => {
+          if (!prev) return null
+          return merged.find((m) => m.id === prev.id) || null
+        })
       }
     } catch (err) {
       console.error('Error fetching departments:', err)
@@ -278,10 +287,10 @@ export default function DepartmentsPage() {
         department={selectedDept}
         onBack={() => {
           setSelectedDept(null)
-          loadDepartments()
+          loadDepartments(false)
         }}
         onDepartmentUpdated={() => {
-          loadDepartments()
+          loadDepartments(true)
         }}
       />
     )

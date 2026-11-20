@@ -17,15 +17,27 @@ import {
   Eye,
   EyeOff,
   Check,
-  AlertCircle
+  AlertCircle,
+  ShieldAlert,
+  CalendarDays,
+  DoorOpen,
+  Send,
+  X
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 
+// Helpers
+const formatDateTime = (isoString) => {
+  if (!isoString) return ''
+  const d = new Date(isoString)
+  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })} at ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+}
+
 export default function AdminPanel() {
   const { user, profile, isAdmin } = useAuth()
 
-  const [activeSection, setActiveSection] = useState('approvals') // 'approvals' | 'security'
+  const [activeSection, setActiveSection] = useState('approvals') // 'approvals' | 'overrides' | 'security'
   
   // Users list state
   const [profiles, setProfiles] = useState([])
@@ -34,6 +46,14 @@ export default function AdminPanel() {
   const [approvalFilter, setApprovalFilter] = useState('pending') // 'pending' | 'approved' | 'all'
   const [actionLoadingId, setActionLoadingId] = useState(null)
   const [actionFeedback, setActionFeedback] = useState(null)
+
+  // Override requests state
+  const [overrideRequests, setOverrideRequests] = useState([])
+  const [loadingOverrides, setLoadingOverrides] = useState(true)
+  const [overrideFilter, setOverrideFilter] = useState('pending') // 'pending' | 'approved' | 'rejected' | 'all'
+  const [approvingOverride, setApprovingOverride] = useState(null)
+  const [submittingApproval, setSubmittingApproval] = useState(false)
+  const [rejectingOverrideId, setRejectingOverrideId] = useState(null)
 
   // Security settings state
   const [newPassword, setNewPassword] = useState('')
@@ -71,9 +91,56 @@ export default function AdminPanel() {
     }
   }
 
+  // Fetch all override requests
+  const loadOverrideRequests = async () => {
+    setLoadingOverrides(true)
+    try {
+      const { data, error } = await supabase
+        .from('override_requests')
+        .select(`
+          *,
+          profiles:requester_id (
+            id,
+            full_name,
+            designation,
+            email
+          ),
+          rooms:room_id (
+            id,
+            name,
+            type,
+            department_id,
+            departments (
+              id,
+              name,
+              code
+            )
+          )
+        `)
+        .order('created_at', { ascending: false })
+
+      if (error) {
+        console.warn('Override requests load notice:', error)
+        // Fallback simple fetch if join relationships vary
+        const { data: simpleData } = await supabase
+          .from('override_requests')
+          .select('*')
+          .order('created_at', { ascending: false })
+        setOverrideRequests(simpleData || [])
+      } else {
+        setOverrideRequests(data || [])
+      }
+    } catch (err) {
+      console.error('Error loading override requests:', err)
+    } finally {
+      setLoadingOverrides(false)
+    }
+  }
+
   useEffect(() => {
     if (isAdmin) {
       loadProfiles()
+      loadOverrideRequests()
     }
   }, [isAdmin])
 
@@ -102,7 +169,6 @@ export default function AdminPanel() {
           message: `Update failed: ${error.message}`
         })
       } else {
-        // Optimistically update list
         setProfiles((prev) =>
           prev.map((p) =>
             p.id === targetUser.id ? { ...p, is_approved: shouldApprove } : p
@@ -122,6 +188,64 @@ export default function AdminPanel() {
       })
     } finally {
       setActionLoadingId(null)
+    }
+  }
+
+  // Handle Approve Override via RPC
+  const handleApproveOverrideConfirm = async () => {
+    if (!approvingOverride) return
+    setSubmittingApproval(true)
+    setActionFeedback(null)
+
+    try {
+      const { data, error } = await supabase.rpc('approve_override_request', {
+        req_id: approvingOverride.id
+      })
+
+      if (error) throw error
+
+      setActionFeedback({
+        type: 'success',
+        message: `Override approved successfully! Any conflicting booking was removed and the slot has been reserved for the requester.`
+      })
+      setApprovingOverride(null)
+      loadOverrideRequests()
+    } catch (err) {
+      console.error('Override approval error:', err)
+      setActionFeedback({
+        type: 'error',
+        message: `Failed to approve override: ${err.message}`
+      })
+    } finally {
+      setSubmittingApproval(false)
+    }
+  }
+
+  // Handle Reject Override
+  const handleRejectOverride = async (reqId) => {
+    setRejectingOverrideId(reqId)
+    setActionFeedback(null)
+
+    try {
+      const { error } = await supabase
+        .from('override_requests')
+        .update({ status: 'rejected' })
+        .eq('id', reqId)
+
+      if (error) throw error
+
+      setActionFeedback({
+        type: 'success',
+        message: 'Override request has been marked as rejected.'
+      })
+      loadOverrideRequests()
+    } catch (err) {
+      setActionFeedback({
+        type: 'error',
+        message: `Failed to reject override request: ${err.message}`
+      })
+    } finally {
+      setRejectingOverrideId(null)
     }
   }
 
@@ -232,8 +356,9 @@ export default function AdminPanel() {
   }
 
   // Compute metrics
-  const pendingCount = profiles.filter((p) => p.is_approved === false).length
-  const approvedCount = profiles.filter((p) => p.is_approved === true).length
+  const pendingStaffCount = profiles.filter((p) => p.is_approved === false).length
+  const approvedStaffCount = profiles.filter((p) => p.is_approved === true).length
+  const pendingOverridesCount = overrideRequests.filter((o) => o.status === 'pending').length
 
   // Filtered users list
   const filteredProfiles = profiles.filter((p) => {
@@ -254,13 +379,19 @@ export default function AdminPanel() {
     return matchesFilter && matchesSearch
   })
 
+  // Filtered override requests
+  const filteredOverrides = overrideRequests.filter((o) => {
+    if (overrideFilter !== 'all' && o.status !== overrideFilter) return false
+    return true
+  })
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-2xl p-6 sm:p-8 text-white shadow-xl border border-indigo-900/50 mb-8">
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-3xl p-6 sm:p-8 text-white shadow-xl border border-indigo-900/50 mb-8">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <div className="p-3.5 bg-indigo-600/90 rounded-xl shadow-lg shadow-indigo-600/30 ring-4 ring-indigo-500/20">
+            <div className="p-3.5 bg-indigo-600/90 rounded-2xl shadow-lg shadow-indigo-600/30 ring-4 ring-indigo-500/20">
               <ShieldCheck className="w-7 h-7 text-white" />
             </div>
             <div>
@@ -273,26 +404,30 @@ export default function AdminPanel() {
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-300 mt-1">
-                Manage staff authorization, account approvals, and system credentials
+                Manage staff authorization, conflict override requests, and system credentials
               </p>
             </div>
           </div>
 
           {/* Quick Metrics */}
-          <div className="flex items-center gap-3 bg-slate-800/80 border border-slate-700/80 rounded-xl p-2.5 px-4">
+          <div className="flex items-center gap-3 bg-slate-800/80 border border-slate-700/80 rounded-2xl p-2.5 px-4">
             <div className="text-center px-2 border-r border-slate-700">
-              <div className="text-lg font-bold text-amber-400">{pendingCount}</div>
-              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Pending</div>
+              <div className="text-lg font-bold text-amber-400">{pendingStaffCount}</div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Pending Staff</div>
+            </div>
+            <div className="text-center px-2 border-r border-slate-700">
+              <div className="text-lg font-bold text-rose-400">{pendingOverridesCount}</div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Pending Overrides</div>
             </div>
             <div className="text-center px-2">
-              <div className="text-lg font-bold text-emerald-400">{approvedCount}</div>
-              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Approved</div>
+              <div className="text-lg font-bold text-emerald-400">{approvedStaffCount}</div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Approved Staff</div>
             </div>
           </div>
         </div>
 
         {/* Section Tabs */}
-        <div className="flex items-center gap-2 mt-6 pt-6 border-t border-slate-800">
+        <div className="flex flex-wrap items-center gap-2 mt-6 pt-6 border-t border-slate-800">
           <button
             type="button"
             onClick={() => setActiveSection('approvals')}
@@ -304,9 +439,27 @@ export default function AdminPanel() {
           >
             <Users className="w-4 h-4" />
             <span>Staff Approval Queue</span>
-            {pendingCount > 0 && (
-              <span className="ml-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-slate-950">
-                {pendingCount}
+            {pendingStaffCount > 0 && (
+              <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-slate-950">
+                {pendingStaffCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSection('overrides')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition ${
+              activeSection === 'overrides'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+            }`}
+          >
+            <ShieldAlert className="w-4 h-4" />
+            <span>Override Requests</span>
+            {pendingOverridesCount > 0 && (
+              <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-400 text-slate-950">
+                {pendingOverridesCount}
               </span>
             )}
           </button>
@@ -326,36 +479,36 @@ export default function AdminPanel() {
         </div>
       </div>
 
+      {/* Global Feedback Toast */}
+      {actionFeedback && (
+        <div
+          className={`mb-6 p-4 rounded-2xl border flex items-center justify-between gap-3 text-sm transition-all shadow-sm ${
+            actionFeedback.type === 'success'
+              ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+              : 'bg-red-50 text-red-900 border-red-200'
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            {actionFeedback.type === 'success' ? (
+              <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+            )}
+            <span>{actionFeedback.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionFeedback(null)}
+            className="text-xs font-semibold hover:underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* SECTION 1: USER APPROVALS QUEUE */}
       {activeSection === 'approvals' && (
         <div className="space-y-6">
-          {/* Action Feedback Notification */}
-          {actionFeedback && (
-            <div
-              className={`p-4 rounded-xl border flex items-center justify-between gap-3 text-sm transition-all ${
-                actionFeedback.type === 'success'
-                  ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
-                  : 'bg-red-50 text-red-900 border-red-200'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                {actionFeedback.type === 'success' ? (
-                  <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
-                ) : (
-                  <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
-                )}
-                <span>{actionFeedback.message}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActionFeedback(null)}
-                className="text-xs font-semibold hover:underline"
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
-
           {/* Search & Filter Toolbar */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
             
@@ -373,7 +526,7 @@ export default function AdminPanel() {
                 <Clock className="w-3.5 h-3.5 text-amber-500" />
                 <span>Pending Review</span>
                 <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-100 text-amber-800">
-                  {pendingCount}
+                  {pendingStaffCount}
                 </span>
               </button>
 
@@ -389,7 +542,7 @@ export default function AdminPanel() {
                 <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
                 <span>Approved</span>
                 <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-100 text-emerald-800">
-                  {approvedCount}
+                  {approvedStaffCount}
                 </span>
               </button>
 
@@ -482,7 +635,6 @@ export default function AdminPanel() {
 
                       return (
                         <tr key={p.id} className="hover:bg-slate-50/70 transition">
-                          {/* Staff Column */}
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="flex items-center gap-3">
                               <div className="w-9 h-9 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-sm">
@@ -509,12 +661,10 @@ export default function AdminPanel() {
                             </div>
                           </td>
 
-                          {/* Designation */}
                           <td className="px-6 py-4 whitespace-nowrap text-slate-600 text-xs sm:text-sm font-medium">
                             {p.designation || 'Not specified'}
                           </td>
 
-                          {/* Email */}
                           <td className="px-6 py-4 whitespace-nowrap text-slate-600 text-xs sm:text-sm">
                             <span className="inline-flex items-center gap-1.5">
                               <Mail className="w-3.5 h-3.5 text-slate-400" />
@@ -522,7 +672,6 @@ export default function AdminPanel() {
                             </span>
                           </td>
 
-                          {/* Status Badge */}
                           <td className="px-6 py-4 whitespace-nowrap">
                             {isApproved ? (
                               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
@@ -537,7 +686,6 @@ export default function AdminPanel() {
                             )}
                           </td>
 
-                          {/* Action Button */}
                           <td className="px-6 py-4 whitespace-nowrap text-right text-xs">
                             {isCurrentUser ? (
                               <span className="text-slate-400 italic text-xs">Protected (Self)</span>
@@ -582,7 +730,204 @@ export default function AdminPanel() {
         </div>
       )}
 
-      {/* SECTION 2: ADMIN SECURITY SETTINGS */}
+      {/* SECTION 2: OVERRIDE REQUESTS QUEUE */}
+      {activeSection === 'overrides' && (
+        <div className="space-y-6">
+          {/* Filter Bar */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="inline-flex rounded-xl bg-slate-100 p-1 gap-1">
+              <button
+                type="button"
+                onClick={() => setOverrideFilter('pending')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  overrideFilter === 'pending'
+                    ? 'bg-white text-rose-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <span>Pending Review</span>
+                <span className="ml-1.5 px-1.5 py-0.2 rounded-full text-[10px] bg-rose-100 text-rose-800 font-bold">
+                  {pendingOverridesCount}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setOverrideFilter('approved')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  overrideFilter === 'approved'
+                    ? 'bg-white text-emerald-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Approved Overrides
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setOverrideFilter('rejected')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  overrideFilter === 'rejected'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Declined
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setOverrideFilter('all')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  overrideFilter === 'all'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                All Requests ({overrideRequests.length})
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={loadOverrideRequests}
+              disabled={loadingOverrides}
+              className="p-2 border border-slate-200 hover:bg-slate-50 rounded-xl text-slate-600 transition disabled:opacity-50 self-end sm:self-auto"
+            >
+              <RefreshCw className={`w-4 h-4 ${loadingOverrides ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          {/* Override List */}
+          {loadingOverrides ? (
+            <div className="bg-white rounded-3xl border border-slate-200 p-16 text-center shadow-sm">
+              <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto mb-3" />
+              <p className="text-sm font-semibold text-slate-700">Loading priority override requests...</p>
+            </div>
+          ) : filteredOverrides.length === 0 ? (
+            <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center shadow-sm">
+              <div className="w-14 h-14 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mx-auto mb-4">
+                <ShieldAlert className="w-7 h-7" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 mb-1">No Override Requests</h3>
+              <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto">
+                {overrideFilter === 'pending'
+                  ? 'All staff conflict override requests have been processed! No pending items.'
+                  : 'No requests matched the current filter.'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {filteredOverrides.map((req) => {
+                const requester = req.profiles
+                const room = req.rooms
+                const dept = room?.departments
+                const isPending = req.status === 'pending'
+
+                return (
+                  <div
+                    key={req.id}
+                    className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col md:flex-row md:items-start justify-between gap-6"
+                  >
+                    <div className="space-y-3 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                          {dept?.code || 'DEPT'}
+                        </span>
+                        <span className="text-xs font-semibold text-slate-800">
+                          {room?.name} ({room?.type})
+                        </span>
+                        <span className="text-slate-300">&bull;</span>
+                        <span className="text-xs text-slate-500">
+                          {dept?.name}
+                        </span>
+                      </div>
+
+                      <div>
+                        <h4 className="text-base font-bold text-slate-900">
+                          {req.purpose}
+                        </h4>
+                        <div className="text-xs text-slate-600 mt-1">
+                          Requested by <strong className="text-slate-900">{requester?.full_name || 'Staff Member'}</strong>{' '}
+                          ({requester?.designation || requester?.email})
+                        </div>
+                      </div>
+
+                      {/* Time Slot & Priority Reason Box */}
+                      <div className="bg-amber-50/60 border border-amber-200/80 rounded-xl p-3.5 text-xs text-amber-950 space-y-1.5">
+                        <div className="flex items-center gap-2 font-medium">
+                          <CalendarDays className="w-4 h-4 text-amber-600 shrink-0" />
+                          <span>
+                            <strong>Target Slot:</strong> {formatDateTime(req.start_time)} &rarr; {new Date(req.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="font-bold">Staff Justification:</span>{' '}
+                            <span>{req.priority_reason}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-slate-400">
+                        Submitted: {new Date(req.created_at).toLocaleString()}
+                      </div>
+                    </div>
+
+                    {/* Action Area */}
+                    <div className="flex flex-col items-start md:items-end justify-between self-stretch gap-3">
+                      <div>
+                        {req.status === 'pending' && (
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                            <Clock className="w-3.5 h-3.5 text-amber-600" />
+                            <span>Pending Decision</span>
+                          </span>
+                        )}
+                        {req.status === 'approved' && (
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Override Approved</span>
+                          </span>
+                        )}
+                        {req.status === 'rejected' && (
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-800 border border-red-200">
+                            <AlertCircle className="w-3.5 h-3.5 text-red-600" />
+                            <span>Request Declined</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {isPending && (
+                        <div className="flex items-center gap-2 pt-2">
+                          <button
+                            type="button"
+                            disabled={rejectingOverrideId === req.id}
+                            onClick={() => handleRejectOverride(req.id)}
+                            className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-red-700 hover:bg-red-50 border border-slate-200 rounded-xl transition"
+                          >
+                            {rejectingOverrideId === req.id ? 'Declining...' : 'Decline'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setApprovingOverride(req)}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl shadow-sm transition"
+                          >
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            <span>Approve Override</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* SECTION 3: ADMIN SECURITY SETTINGS */}
       {activeSection === 'security' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           
@@ -771,6 +1116,60 @@ export default function AdminPanel() {
 
         </div>
       )}
+
+      {/* ===================================================================== */}
+      {/* MODAL: APPROVE OVERRIDE CONFIRMATION */}
+      {/* ===================================================================== */}
+      {approvingOverride && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-amber-100 overflow-hidden animate-in fade-in zoom-in-95 duration-150 p-6">
+            <div className="w-12 h-12 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+
+            <h3 className="text-lg font-bold text-slate-900 text-center mb-1">
+              Confirm Priority Override Approval
+            </h3>
+
+            <p className="text-xs sm:text-sm text-slate-600 text-center mb-4 leading-relaxed">
+              You are approving an override for{' '}
+              <strong>{approvingOverride.profiles?.full_name || 'Staff Member'}</strong> in{' '}
+              <strong>{approvingOverride.rooms?.name}</strong>.
+            </p>
+
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3.5 text-xs text-red-950 mb-6 space-y-1.5">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-red-900">Warning: Automatic Conflict Eviction</strong>
+                  <p className="mt-0.5 text-red-800">
+                    In a single atomic database operation, this approval will automatically cancel any existing booking(s) scheduled during this time slot and reassign the room to the requester.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => setApprovingOverride(null)}
+                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={submittingApproval}
+                onClick={handleApproveOverrideConfirm}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-xl shadow-md transition disabled:opacity-50"
+              >
+                {submittingApproval ? 'Applying Override...' : 'Confirm & Reassign Room'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }

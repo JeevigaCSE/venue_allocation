@@ -9,6 +9,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
   const [authError, setAuthError] = useState(null)
   const [authMessage, setAuthMessage] = useState(null)
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false)
 
   // Fetch profile for a given user id and verify approval
   const fetchAndVerifyProfile = async (userId) => {
@@ -63,17 +64,30 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let isMounted = true
 
+    // Check if URL hash indicates a password recovery redirect
+    if (window.location.hash && window.location.hash.includes('type=recovery')) {
+      setIsPasswordRecovery(true)
+    }
+
     const initializeAuth = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession()
 
         if (session?.user) {
-          const result = await fetchAndVerifyProfile(session.user.id)
-          if (isMounted) {
-            if (result.profile && result.profile.is_approved === true) {
+          // If in recovery mode, set user without kicking out
+          if (window.location.hash && window.location.hash.includes('type=recovery')) {
+            if (isMounted) {
               setUser(session.user)
-              setProfile(result.profile)
-              setAuthError(null)
+              setIsPasswordRecovery(true)
+            }
+          } else {
+            const result = await fetchAndVerifyProfile(session.user.id)
+            if (isMounted) {
+              if (result.profile && result.profile.is_approved === true) {
+                setUser(session.user)
+                setProfile(result.profile)
+                setAuthError(null)
+              }
             }
           }
         }
@@ -90,17 +104,36 @@ export function AuthProvider({ children }) {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
+        if (event === 'PASSWORD_RECOVERY') {
+          if (isMounted) {
+            setIsPasswordRecovery(true)
+            if (session?.user) setUser(session.user)
+            setLoading(false)
+          }
+          return
+        }
+
         if (event === 'SIGNED_OUT') {
           if (isMounted) {
             setUser(null)
             setProfile(null)
+            setIsPasswordRecovery(false)
             setLoading(false)
           }
           return
         }
 
         if (session?.user) {
-          // If already verified and id matches, don't re-kick
+          // Check if password recovery mode is active
+          if (window.location.hash && window.location.hash.includes('type=recovery')) {
+            if (isMounted) {
+              setUser(session.user)
+              setIsPasswordRecovery(true)
+              setLoading(false)
+            }
+            return
+          }
+
           const result = await fetchAndVerifyProfile(session.user.id)
           if (isMounted) {
             if (result.profile && result.profile.is_approved === true) {
@@ -199,10 +232,47 @@ export function AuthProvider({ children }) {
     return { data, message: successMsg }
   }
 
+  // Request password reset email
+  const resetPasswordForEmail = async (email) => {
+    setAuthError(null)
+    setAuthMessage(null)
+
+    const { data, error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin,
+    })
+
+    if (error) {
+      setAuthError(error.message)
+      return { error }
+    }
+
+    const successMsg =
+      'A secure password reset link has been dispatched to your email address. Please follow the instructions to set a new password.'
+    setAuthMessage(successMsg)
+    return { data, message: successMsg }
+  }
+
+  // Update password after recovery link click
+  const updatePassword = async (newPassword) => {
+    const { data, error } = await supabase.auth.updateUser({
+      password: newPassword,
+    })
+
+    if (error) throw error
+
+    // Clear hash and recovery mode
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+    setIsPasswordRecovery(false)
+    return data
+  }
+
   // Sign Out function
   const signOut = async () => {
     setAuthError(null)
     setAuthMessage(null)
+    setIsPasswordRecovery(false)
     try {
       await supabase.auth.signOut()
     } catch (err) {
@@ -225,6 +295,10 @@ export function AuthProvider({ children }) {
     signUp,
     signOut,
     refreshProfile,
+    resetPasswordForEmail,
+    updatePassword,
+    isPasswordRecovery,
+    setIsPasswordRecovery,
     isAdmin: profile?.role === 'admin' && profile?.is_approved === true,
     isApproved: profile?.is_approved === true,
   }
