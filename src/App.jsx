@@ -6,6 +6,7 @@ import AdminPanel from './pages/AdminPanel'
 import DepartmentsPage from './pages/DepartmentsPage'
 import MyBookingsPage from './pages/MyBookingsPage'
 import SetNewPasswordModal from './components/SetNewPasswordModal'
+import RequestNotifications from './components/RequestNotifications'
 import { Building2, RefreshCw } from 'lucide-react'
 
 function AppContent() {
@@ -60,6 +61,10 @@ function AppContent() {
       <Navbar
         activeTab={activeTab}
         onTabChange={handleTabChange}
+      />
+
+      <RequestNotifications
+        onView={!isAdmin ? () => setActiveTab('my-bookings') : undefined}
       />
 
       <main className="flex-1 pb-16">

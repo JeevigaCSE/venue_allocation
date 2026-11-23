@@ -16,6 +16,7 @@ import {
   Filter
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { isStandardRequest, isCancellationNotice, cleanPurpose, notifyAdminOfCancellation } from '../lib/bookingRequests'
 import { useAuth } from '../context/AuthContext'
 
 // Helper: format ISO date to readable string (e.g., "Nov 22, 2026")
@@ -36,9 +37,9 @@ const formatDisplayTime = (isoString) => {
 }
 
 export default function MyBookingsPage({ onNavigateToDepartments }) {
-  const { user } = useAuth()
+  const { user, isAdmin } = useAuth()
 
-  const [activeTab, setActiveTab] = useState('upcoming') // 'upcoming' | 'past' | 'overrides'
+  const [activeTab, setActiveTab] = useState('upcoming') // 'upcoming' | 'pending' | 'past' | 'overrides'
   const [bookings, setBookings] = useState([])
   const [overrides, setOverrides] = useState([])
   const [loading, setLoading] = useState(true)
@@ -124,7 +125,7 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
       }
 
       setBookings(bData || [])
-      setOverrides(oData || [])
+      setOverrides((oData || []).filter((o) => !isCancellationNotice(o)))
     } catch (err) {
       console.error('Error loading my bookings:', err)
       setFetchError(err.message || 'Failed to load your personal bookings.')
@@ -150,9 +151,14 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
 
       if (error) throw error
 
+      // Let the admin know a staff member cancelled
+      if (!isAdmin) {
+        await notifyAdminOfCancellation(cancelingBooking, user.id)
+      }
+
       setFeedback({
         type: 'success',
-        message: 'Your reservation has been canceled.'
+        message: 'Your reservation has been canceled and the admin has been notified.'
       })
       setCancelingBooking(null)
       loadMyData()
@@ -191,8 +197,13 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
   const displayedList = useMemo(() => {
     const q = searchTerm.toLowerCase()
 
-    if (activeTab === 'overrides') {
-      return overrides.filter((o) => {
+    if (activeTab === 'overrides' || activeTab === 'pending') {
+      // 'pending' = normal booking requests not yet approved (approved ones become bookings)
+      const source =
+        activeTab === 'pending'
+          ? overrides.filter((o) => isStandardRequest(o) && o.status !== 'approved')
+          : overrides.filter((o) => !isStandardRequest(o))
+      return source.filter((o) => {
         const roomName = o.rooms?.name || ''
         const deptName = o.rooms?.departments?.name || ''
         const deptCode = o.rooms?.departments?.code || ''
@@ -220,7 +231,12 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
     })
   }, [activeTab, upcomingBookings, pastBookings, overrides, searchTerm])
 
-  const pendingOverridesCount = overrides.filter((o) => o.status === 'pending').length
+  const pendingOverridesCount = overrides.filter(
+    (o) => !isStandardRequest(o) && o.status === 'pending'
+  ).length
+  const pendingRequestsCount = overrides.filter(
+    (o) => isStandardRequest(o) && o.status === 'pending'
+  ).length
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -261,10 +277,10 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
               <span>Personal Scheduling Hub</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-              My Reservations & Overrides
+              My Reservations & Requests
             </h1>
             <p className="text-slate-300 text-xs sm:text-sm mt-1.5 leading-relaxed">
-              Track your scheduled classrooms, laboratories, seminar halls, and review administrator override requests.
+              Track your scheduled classrooms, laboratories, seminar halls, and track your booking requests awaiting admin approval.
             </p>
           </div>
 
@@ -279,8 +295,8 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
               <div className="text-[10px] uppercase font-semibold text-slate-400">Completed</div>
             </div>
             <div className="text-center px-2">
-              <div className="text-xl font-bold text-amber-400">{pendingOverridesCount}</div>
-              <div className="text-[10px] uppercase font-semibold text-slate-400">Pending Override</div>
+              <div className="text-xl font-bold text-amber-400">{pendingRequestsCount}</div>
+              <div className="text-[10px] uppercase font-semibold text-slate-400">Pending Approval</div>
             </div>
           </div>
         </div>
@@ -304,6 +320,23 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
             <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-indigo-50 text-indigo-700 font-bold">
               {upcomingBookings.length}
             </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('pending')}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+              activeTab === 'pending'
+                ? 'bg-white text-amber-700 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <span>Pending Requests</span>
+            {pendingRequestsCount > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-100 text-amber-800 font-bold">
+                {pendingRequestsCount}
+              </span>
+            )}
           </button>
 
           <button
@@ -397,6 +430,8 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
               ? 'No Upcoming Reservations'
               : activeTab === 'past'
               ? 'No Past Reservations'
+              : activeTab === 'pending'
+              ? 'No Pending Requests'
               : 'No Override Requests'}
           </h3>
           <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto mb-6">
@@ -406,6 +441,8 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
               ? 'You do not have any upcoming room reservations booked. Browse departments to schedule a space.'
               : activeTab === 'past'
               ? 'You have not completed any room bookings yet.'
+              : activeTab === 'pending'
+              ? 'You have no booking requests waiting for admin approval.'
               : 'You have not submitted any admin override requests.'}
           </p>
           {onNavigateToDepartments && activeTab === 'upcoming' && !searchTerm && (
@@ -423,10 +460,11 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
         /* LIST OF CARDS */
         <div className="space-y-4">
           {displayedList.map((item) => {
-            if (activeTab === 'overrides') {
-              // Override Request Card
+            if (activeTab === 'overrides' || activeTab === 'pending') {
+              // Request Card (pending booking requests + override requests)
               const room = item.rooms
               const dept = room?.departments
+              const isStd = isStandardRequest(item)
 
               return (
                 <div
@@ -448,7 +486,7 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
                         </span>
                       </div>
                       <h3 className="text-base font-bold text-slate-900">
-                        {item.purpose}
+                        {cleanPurpose(item.purpose)}
                       </h3>
                     </div>
 
@@ -457,19 +495,19 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
                       {item.status === 'pending' && (
                         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
                           <Clock className="w-3.5 h-3.5 text-amber-600" />
-                          <span>Pending Admin Review</span>
+                          <span>{isStd ? 'Pending Admin Approval' : 'Pending Admin Review'}</span>
                         </span>
                       )}
                       {item.status === 'approved' && (
                         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Override Approved</span>
+                          <span>{isStd ? 'Approved' : 'Override Approved'}</span>
                         </span>
                       )}
                       {item.status === 'rejected' && (
                         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-800 border border-red-200">
                           <AlertCircle className="w-3.5 h-3.5 text-red-600" />
-                          <span>Override Declined</span>
+                          <span>{isStd ? 'Rejected' : 'Override Declined'}</span>
                         </span>
                       )}
                     </div>
@@ -486,12 +524,14 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
                         </span>
                       </span>
                     </div>
-                    <div className="flex items-start gap-2">
-                      <ShieldAlert className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
-                      <span>
-                        <strong>Priority Justification:</strong> {item.priority_reason}
-                      </span>
-                    </div>
+                    {!isStd && (
+                      <div className="flex items-start gap-2">
+                        <ShieldAlert className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                        <span>
+                          <strong>Priority Justification:</strong> {item.priority_reason}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
@@ -530,7 +570,7 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
                     </div>
 
                     <h3 className="text-base font-bold text-slate-900 mb-1">
-                      {booking.purpose}
+                      {cleanPurpose(booking.purpose)}
                     </h3>
 
                     <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 mt-2">
@@ -599,7 +639,7 @@ export default function MyBookingsPage({ onNavigateToDepartments }) {
 
             <p className="text-xs sm:text-sm text-slate-600 text-center mb-4 leading-relaxed">
               Are you sure you want to cancel your reservation for{' '}
-              <strong>"{cancelingBooking.purpose}"</strong> scheduled on{' '}
+              <strong>"{cleanPurpose(cancelingBooking.purpose)}"</strong> scheduled on{' '}
               <span className="font-semibold">
                 {formatDisplayDate(cancelingBooking.start_time)}
               </span>{' '}
