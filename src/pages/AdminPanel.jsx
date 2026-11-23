@@ -26,6 +26,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { isStandardRequest, isCancellationNotice } from '../lib/bookingRequests'
 
 // Helpers
 const formatDateTime = (isoString) => {
@@ -198,6 +199,29 @@ export default function AdminPanel() {
     setActionFeedback(null)
 
     try {
+      // A normal request must NOT delete an existing booking (the approve
+      // function would evict it). Block approval if the slot is already taken.
+      if (isStandardRequest(approvingOverride)) {
+        const { data: clashes, error: clashErr } = await supabase
+          .from('bookings')
+          .select('id')
+          .eq('room_id', approvingOverride.room_id)
+          .lt('start_time', approvingOverride.end_time)
+          .gt('end_time', approvingOverride.start_time)
+          .limit(1)
+
+        if (clashErr) throw clashErr
+        if (clashes && clashes.length > 0) {
+          setActionFeedback({
+            type: 'error',
+            message:
+              'This slot has since been booked by someone else. Please decline this request.'
+          })
+          setApprovingOverride(null)
+          return
+        }
+      }
+
       const { data, error } = await supabase.rpc('approve_override_request', {
         req_id: approvingOverride.id
       })
@@ -206,7 +230,9 @@ export default function AdminPanel() {
 
       setActionFeedback({
         type: 'success',
-        message: `Override approved successfully! Any conflicting booking was removed and the slot has been reserved for the requester.`
+        message: isStandardRequest(approvingOverride)
+          ? 'Booking request approved. The room is now reserved for the staff member.'
+          : `Override approved successfully! Any conflicting booking was removed and the slot has been reserved for the requester.`
       })
       setApprovingOverride(null)
       loadOverrideRequests()
@@ -218,6 +244,23 @@ export default function AdminPanel() {
       })
     } finally {
       setSubmittingApproval(false)
+    }
+  }
+
+  // Admin marks a staff cancellation notice as seen
+  const handleAcknowledgeCancellation = async (reqId) => {
+    try {
+      const { error } = await supabase
+        .from('override_requests')
+        .update({ status: 'approved' })
+        .eq('id', reqId)
+      if (error) throw error
+      loadOverrideRequests()
+    } catch (err) {
+      setActionFeedback({
+        type: 'error',
+        message: `Failed to update notice: ${err.message}`
+      })
     }
   }
 
@@ -236,7 +279,7 @@ export default function AdminPanel() {
 
       setActionFeedback({
         type: 'success',
-        message: 'Override request has been marked as rejected.'
+        message: 'Request has been rejected.'
       })
       loadOverrideRequests()
     } catch (err) {
@@ -358,7 +401,16 @@ export default function AdminPanel() {
   // Compute metrics
   const pendingStaffCount = profiles.filter((p) => p.is_approved === false).length
   const approvedStaffCount = profiles.filter((p) => p.is_approved === true).length
-  const pendingOverridesCount = overrideRequests.filter((o) => o.status === 'pending').length
+  // Normal staff booking requests and priority override requests are shown separately
+  const standardRequestsAll = overrideRequests.filter((o) => isStandardRequest(o))
+  const cancellationsAll = overrideRequests.filter((o) => isCancellationNotice(o))
+  const pendingCancellationsCount = cancellationsAll.filter((o) => o.status === 'pending').length
+  const overrideOnlyAll = overrideRequests.filter(
+    (o) => !isStandardRequest(o) && !isCancellationNotice(o)
+  )
+  const pendingRequestsCount = standardRequestsAll.filter((o) => o.status === 'pending').length
+  const pendingOverridesCount = overrideOnlyAll.filter((o) => o.status === 'pending').length
+  const sectionItems = activeSection === 'requests' ? standardRequestsAll : overrideOnlyAll
 
   // Filtered users list
   const filteredProfiles = profiles.filter((p) => {
@@ -380,7 +432,7 @@ export default function AdminPanel() {
   })
 
   // Filtered override requests
-  const filteredOverrides = overrideRequests.filter((o) => {
+  const filteredOverrides = sectionItems.filter((o) => {
     if (overrideFilter !== 'all' && o.status !== overrideFilter) return false
     return true
   })
@@ -416,6 +468,10 @@ export default function AdminPanel() {
               <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Pending Staff</div>
             </div>
             <div className="text-center px-2 border-r border-slate-700">
+              <div className="text-lg font-bold text-sky-400">{pendingRequestsCount}</div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Pending Requests</div>
+            </div>
+            <div className="text-center px-2 border-r border-slate-700">
               <div className="text-lg font-bold text-rose-400">{pendingOverridesCount}</div>
               <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Pending Overrides</div>
             </div>
@@ -442,6 +498,42 @@ export default function AdminPanel() {
             {pendingStaffCount > 0 && (
               <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-slate-950">
                 {pendingStaffCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSection('requests')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition ${
+              activeSection === 'requests'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+            }`}
+          >
+            <CalendarDays className="w-4 h-4" />
+            <span>Request Queue</span>
+            {pendingRequestsCount > 0 && (
+              <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-400 text-slate-950">
+                {pendingRequestsCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSection('cancellations')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition ${
+              activeSection === 'cancellations'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+            }`}
+          >
+            <XCircle className="w-4 h-4" />
+            <span>Cancellations</span>
+            {pendingCancellationsCount > 0 && (
+              <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-400 text-slate-950">
+                {pendingCancellationsCount}
               </span>
             )}
           </button>
@@ -730,8 +822,71 @@ export default function AdminPanel() {
         </div>
       )}
 
+      {/* SECTION: STAFF CANCELLATIONS */}
+      {activeSection === 'cancellations' && (
+        <div className="space-y-4">
+          {loadingOverrides ? (
+            <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center shadow-sm">
+              <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto mb-3" />
+              <p className="text-sm font-semibold text-slate-700">Loading cancellations...</p>
+            </div>
+          ) : cancellationsAll.length === 0 ? (
+            <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center shadow-sm text-sm text-slate-500">
+              No bookings have been cancelled by staff.
+            </div>
+          ) : (
+            cancellationsAll.map((c) => {
+              const isNew = c.status === 'pending'
+              return (
+                <div
+                  key={c.id}
+                  className={`bg-white rounded-2xl border shadow-sm p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                    isNew ? 'border-orange-200' : 'border-slate-200 opacity-70'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                        {c.rooms?.departments?.code || 'DEPT'}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-800">
+                        {c.rooms?.name} ({c.rooms?.type})
+                      </span>
+                      {isNew && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-100 text-orange-800">
+                          NEW
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="text-base font-bold text-slate-900">{c.purpose}</h4>
+                    <p className="text-xs text-slate-600 mt-1">
+                      <strong>{c.profiles?.full_name || 'Staff member'}</strong> cancelled this booking on{' '}
+                      {new Date(c.created_at).toLocaleString()}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Slot that is now free: {formatDateTime(c.start_time)} &rarr;{' '}
+                      {new Date(c.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                  {isNew && (
+                    <button
+                      type="button"
+                      onClick={() => handleAcknowledgeCancellation(c.id)}
+                      className="self-start sm:self-auto inline-flex items-center gap-1.5 px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-xl transition"
+                    >
+                      <Check className="w-4 h-4" />
+                      <span>Mark as seen</span>
+                    </button>
+                  )}
+                </div>
+              )
+            })
+          )}
+        </div>
+      )}
+
       {/* SECTION 2: OVERRIDE REQUESTS QUEUE */}
-      {activeSection === 'overrides' && (
+      {(activeSection === 'overrides' || activeSection === 'requests') && (
         <div className="space-y-6">
           {/* Filter Bar */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -747,7 +902,7 @@ export default function AdminPanel() {
               >
                 <span>Pending Review</span>
                 <span className="ml-1.5 px-1.5 py-0.2 rounded-full text-[10px] bg-rose-100 text-rose-800 font-bold">
-                  {pendingOverridesCount}
+                  {activeSection === 'requests' ? pendingRequestsCount : pendingOverridesCount}
                 </span>
               </button>
 
@@ -760,7 +915,7 @@ export default function AdminPanel() {
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                Approved Overrides
+                {activeSection === 'requests' ? 'Approved' : 'Approved Overrides'}
               </button>
 
               <button
@@ -784,7 +939,7 @@ export default function AdminPanel() {
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                All Requests ({overrideRequests.length})
+                All Requests ({sectionItems.length})
               </button>
             </div>
 
@@ -802,17 +957,21 @@ export default function AdminPanel() {
           {loadingOverrides ? (
             <div className="bg-white rounded-3xl border border-slate-200 p-16 text-center shadow-sm">
               <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto mb-3" />
-              <p className="text-sm font-semibold text-slate-700">Loading priority override requests...</p>
+              <p className="text-sm font-semibold text-slate-700">{activeSection === 'requests' ? 'Loading booking requests...' : 'Loading priority override requests...'}</p>
             </div>
           ) : filteredOverrides.length === 0 ? (
             <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center shadow-sm">
               <div className="w-14 h-14 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mx-auto mb-4">
                 <ShieldAlert className="w-7 h-7" />
               </div>
-              <h3 className="text-lg font-bold text-slate-900 mb-1">No Override Requests</h3>
+              <h3 className="text-lg font-bold text-slate-900 mb-1">
+                {activeSection === 'requests' ? 'No Booking Requests' : 'No Override Requests'}
+              </h3>
               <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto">
                 {overrideFilter === 'pending'
-                  ? 'All staff conflict override requests have been processed! No pending items.'
+                  ? activeSection === 'requests'
+                    ? 'All staff booking requests have been processed! No pending items.'
+                    : 'All staff conflict override requests have been processed! No pending items.'
                   : 'No requests matched the current filter.'}
               </p>
             </div>
@@ -823,6 +982,7 @@ export default function AdminPanel() {
                 const room = req.rooms
                 const dept = room?.departments
                 const isPending = req.status === 'pending'
+                const isStd = isStandardRequest(req)
 
                 return (
                   <div
@@ -861,13 +1021,20 @@ export default function AdminPanel() {
                             <strong>Target Slot:</strong> {formatDateTime(req.start_time)} &rarr; {new Date(req.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </span>
                         </div>
-                        <div className="flex items-start gap-2">
-                          <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                          <div>
-                            <span className="font-bold">Staff Justification:</span>{' '}
-                            <span>{req.priority_reason}</span>
+                        {isStd ? (
+                          <div className="flex items-start gap-2">
+                            <Check className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                            <span className="font-bold">Normal booking request</span>
                           </div>
-                        </div>
+                        ) : (
+                          <div className="flex items-start gap-2">
+                            <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                            <div>
+                              <span className="font-bold">Override Justification:</span>{' '}
+                              <span>{req.priority_reason}</span>
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       <div className="text-[11px] text-slate-400">
@@ -887,7 +1054,7 @@ export default function AdminPanel() {
                         {req.status === 'approved' && (
                           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
                             <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                            <span>Override Approved</span>
+                            <span>{isStd ? 'Approved' : 'Override Approved'}</span>
                           </span>
                         )}
                         {req.status === 'rejected' && (
@@ -914,7 +1081,7 @@ export default function AdminPanel() {
                             className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl shadow-sm transition"
                           >
                             <ShieldCheck className="w-3.5 h-3.5" />
-                            <span>Approve Override</span>
+                            <span>{isStd ? 'Approve' : 'Approve Override'}</span>
                           </button>
                         </div>
                       )}
@@ -1128,7 +1295,7 @@ export default function AdminPanel() {
             </div>
 
             <h3 className="text-lg font-bold text-slate-900 text-center mb-1">
-              Confirm Priority Override Approval
+              {isStandardRequest(approvingOverride) ? 'Confirm Booking Approval' : 'Confirm Priority Override Approval'}
             </h3>
 
             <p className="text-xs sm:text-sm text-slate-600 text-center mb-4 leading-relaxed">
@@ -1137,6 +1304,7 @@ export default function AdminPanel() {
               <strong>{approvingOverride.rooms?.name}</strong>.
             </p>
 
+            {!isStandardRequest(approvingOverride) && (
             <div className="bg-red-50 border border-red-200 rounded-xl p-3.5 text-xs text-red-950 mb-6 space-y-1.5">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
@@ -1148,6 +1316,7 @@ export default function AdminPanel() {
                 </div>
               </div>
             </div>
+            )}
 
             <div className="flex items-center justify-center gap-3">
               <button
@@ -1163,7 +1332,11 @@ export default function AdminPanel() {
                 onClick={handleApproveOverrideConfirm}
                 className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-xl shadow-md transition disabled:opacity-50"
               >
-                {submittingApproval ? 'Applying Override...' : 'Confirm & Reassign Room'}
+                {submittingApproval
+                  ? 'Approving...'
+                  : isStandardRequest(approvingOverride)
+                  ? 'Confirm & Approve'
+                  : 'Confirm & Reassign Room'}
               </button>
             </div>
           </div>

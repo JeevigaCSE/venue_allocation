@@ -26,6 +26,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { STANDARD_REQUEST_REASON, cleanPurpose, notifyAdminOfCancellation } from '../lib/bookingRequests'
 
 // Local Date Helper (YYYY-MM-DD)
 const getTodayString = () => {
@@ -270,6 +271,47 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
 
     setSubmittingBooking(true)
     try {
+      // STAFF: send a booking REQUEST for admin approval (no direct booking)
+      if (!isAdmin) {
+        const { data: clashes, error: clashErr } = await supabase
+          .from('bookings')
+          .select('id')
+          .eq('room_id', bookingModalRoom.id)
+          .lt('start_time', endObj.toISOString())
+          .gt('end_time', startObj.toISOString())
+          .limit(1)
+
+        if (clashErr) throw clashErr
+        if (clashes && clashes.length > 0) {
+          setConflictDetected(true)
+          setBookingError(
+            'This room is already booked during the selected time slot. Please choose another time, or submit an Admin Override Request if this is an urgent priority.'
+          )
+          return
+        }
+
+        const { error: reqErr } = await supabase.from('override_requests').insert([
+          {
+            room_id: bookingModalRoom.id,
+            requester_id: user.id,
+            purpose: bookPurpose.trim(),
+            priority_reason: STANDARD_REQUEST_REASON,
+            start_time: startObj.toISOString(),
+            end_time: endObj.toISOString(),
+            status: 'pending'
+          }
+        ])
+        if (reqErr) throw reqErr
+
+        setFeedback({
+          type: 'success',
+          message: `Request for "${bookingModalRoom.name}" sent to the admin. Track it in My Bookings > My Requests.`
+        })
+        setBookingModalRoom(null)
+        return
+      }
+
+      // ADMIN: book directly, as before
       const { data, error } = await supabase
         .from('bookings')
         .insert([
@@ -373,9 +415,16 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
 
       if (error) throw error
 
+      // Staff cancelling their own booking -> let the admin know
+      if (!isAdmin && cancelingBooking.user_id === user.id) {
+        await notifyAdminOfCancellation(cancelingBooking, user.id)
+      }
+
       setFeedback({
         type: 'success',
-        message: 'The reservation has been canceled successfully.'
+        message: isAdmin
+          ? 'The reservation has been canceled successfully.'
+          : 'The reservation has been canceled and the admin has been notified.'
       })
       setCancelingBooking(null)
       loadData()
@@ -799,7 +848,7 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
                               </span>
                             </p>
                             <p className="text-[11px] text-amber-800/80 mt-0.5">
-                              Event: {activeBookingNow.purpose}
+                              Event: {cleanPurpose(activeBookingNow.purpose)}
                             </p>
                           </div>
                         )
@@ -854,7 +903,7 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
                                 </div>
                                 <div className="text-slate-600 truncate mt-0.5">
                                   <strong className="text-slate-700">{booker.name}</strong> ({booker.designation}) &bull;{' '}
-                                  <span className="text-slate-500">{b.purpose}</span>
+                                  <span className="text-slate-500">{cleanPurpose(b.purpose)}</span>
                                 </div>
                               </div>
 
@@ -1073,7 +1122,7 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
                   disabled={submittingBooking || conflictDetected}
                   className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-xl shadow-md transition disabled:opacity-50"
                 >
-                  {submittingBooking ? 'Reserving...' : 'Confirm Reservation'}
+                  {submittingBooking ? 'Submitting...' : isAdmin ? 'Confirm Reservation' : 'Send Request'}
                 </button>
               </div>
             </form>
@@ -1097,7 +1146,7 @@ export default function DepartmentDetail({ department, onBack, onDepartmentUpdat
 
             <p className="text-xs sm:text-sm text-slate-600 text-center mb-4 leading-relaxed">
               Are you sure you want to cancel the booking for{' '}
-              <strong>"{cancelingBooking.purpose}"</strong> scheduled on{' '}
+              <strong>"{cleanPurpose(cancelingBooking.purpose)}"</strong> scheduled on{' '}
               <span className="font-semibold">
                 {new Date(cancelingBooking.start_time).toLocaleDateString()}
               </span>{' '}
