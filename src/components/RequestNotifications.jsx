@@ -6,6 +6,7 @@ import {
   cleanPurpose,
   isStandardRequest,
   isCancellationNotice,
+  isOverriddenNotice,
   CANCELLATION_REASON
 } from '../lib/bookingRequests'
 
@@ -112,16 +113,17 @@ export default function RequestNotifications({ onView }) {
   if (!user || items.length === 0) return null
 
   return (
-    <div className="fixed top-20 right-4 z-40 w-[calc(100%-2rem)] sm:w-96 space-y-3">
+    <div className="fixed right-4 z-[65] w-[calc(100%-2rem)] sm:w-96 space-y-3 top-[calc(env(safe-area-inset-top)+4.75rem)]">
       {items.map((it) => {
         const isCancel = it.kind === 'cancel'
         const approved = it.status === 'approved'
         const label = isStandardRequest(it) ? 'booking request' : 'override request'
+        const replaced = isOverriddenNotice(it)
         return (
           <div
             key={it.id}
-            className={`rounded-2xl border shadow-lg p-4 bg-white flex gap-3 ${
-              isCancel ? 'border-orange-200' : approved ? 'border-emerald-200' : 'border-red-200'
+            className={`rounded-2xl border-[1.5px] border-slate-800 shadow-elev-sm p-4 bg-white flex gap-3 animate-toast-in ${
+              isCancel ? 'border-l-[8px] border-l-orange-500' : approved && !replaced ? 'border-l-[8px] border-l-emerald-600' : 'border-l-[8px] border-l-red-600'
             }`}
           >
             {isCancel ? (
@@ -135,6 +137,8 @@ export default function RequestNotifications({ onView }) {
               <div className="font-bold text-slate-900">
                 {isCancel
                   ? `${it.profiles?.full_name || 'A staff member'} cancelled a booking`
+                  : replaced
+                  ? 'Your booking was replaced by an emergency override'
                   : `Your ${label} was ${approved ? 'approved' : 'rejected'}`}
               </div>
               <div className="text-xs text-slate-600 mt-0.5">
@@ -154,7 +158,7 @@ export default function RequestNotifications({ onView }) {
                       dismiss(it.id)
                       onView()
                     }}
-                    className="text-xs font-semibold text-indigo-600 hover:underline"
+                    className="text-xs font-semibold text-brand-700 hover:underline"
                   >
                     View booking
                   </button>
