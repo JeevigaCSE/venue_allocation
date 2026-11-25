@@ -40,3 +40,40 @@ export const notifyAdminOfCancellation = async (booking, userId) => {
     console.warn('Could not notify admin of cancellation:', e)
   }
 }
+
+// ---------------------------------------------------------------------------
+// Replaced-booking notices: when the admin approves an emergency override, the
+// original staff member's earlier approved request row is re-marked with this
+// reason (no database change) so their app can tell them what happened.
+// ---------------------------------------------------------------------------
+export const OVERRIDDEN_REASON = 'Booking replaced by emergency override'
+
+export const isOverriddenNotice = (req) => req?.priority_reason === OVERRIDDEN_REASON
+
+// Call BEFORE the approve RPC deletes the old bookings. Never blocks the approval.
+export const markDisplacedBookings = async (displacedBookings) => {
+  for (const b of displacedBookings) {
+    try {
+      const { data: rows } = await supabase
+        .from('override_requests')
+        .select('id, start_time, end_time')
+        .eq('room_id', b.room_id)
+        .eq('requester_id', b.user_id)
+        .eq('status', 'approved')
+        .eq('priority_reason', STANDARD_REQUEST_REASON)
+      const match = (rows || []).find(
+        (r) =>
+          new Date(r.start_time).getTime() === new Date(b.start_time).getTime() &&
+          new Date(r.end_time).getTime() === new Date(b.end_time).getTime()
+      )
+      if (match) {
+        await supabase
+          .from('override_requests')
+          .update({ priority_reason: OVERRIDDEN_REASON, status: 'rejected' })
+          .eq('id', match.id)
+      }
+    } catch (e) {
+      console.warn('Could not notify displaced booking owner:', e)
+    }
+  }
+}
