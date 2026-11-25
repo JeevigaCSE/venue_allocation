@@ -1,231 +1,132 @@
 import React, { useState } from 'react'
-import {
-  Building2,
-  Shield,
-  Layers,
-  LogOut,
-  User,
-  Menu,
-  X,
-  ChevronRight,
-  CalendarCheck
-} from 'lucide-react'
+import { Building2, Shield, Layers, LogOut, CalendarCheck, ChevronDown } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
+import { APP_CONFIG } from '../lib/config'
 
-export default function Navbar({ activeTab, onTabChange }) {
+const useTabs = (isAdmin) => [
+  { id: 'departments', label: 'Venues', icon: Layers },
+  { id: 'my-bookings', label: 'My Bookings', icon: CalendarCheck },
+  ...(isAdmin ? [{ id: 'admin', label: 'Admin', icon: Shield }] : []),
+]
+
+// Top header: brand + (desktop) tabs + profile. On phones the tabs move to the bottom bar.
+export default function Navbar({ activeTab, onTabChange, adminBadge = 0 }) {
   const { profile, user, signOut, isAdmin } = useAuth()
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-
-  const handleLogout = async () => {
-    await signOut()
-  }
-
-  const handleNavClick = (tab) => {
-    onTabChange(tab)
-    setMobileMenuOpen(false)
-  }
+  const [menuOpen, setMenuOpen] = useState(false)
+  const tabs = useTabs(isAdmin)
+  const initial = (profile?.full_name || user?.email || 'U').charAt(0).toUpperCase()
 
   return (
-    <header className="sticky top-0 z-50 bg-slate-900 border-b border-slate-800 text-white shadow-md">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          
-          {/* Left: Brand & Navigation */}
-          <div className="flex items-center gap-8">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-indigo-600 text-white shadow-md shadow-indigo-600/30">
-                <Building2 className="w-5 h-5" />
-              </div>
-              <div>
-                <span className="font-bold text-base sm:text-lg tracking-tight text-white block leading-tight">
-                  Campus Space Portal
-                </span>
-                <span className="text-[11px] font-medium text-slate-400 block tracking-wide">
-                  Department & Room Booking
-                </span>
-              </div>
-            </div>
+    <header className="sticky top-0 z-50 bg-brand-800 text-white border-b-[1.5px] border-slate-900 shadow-[0_3px_0_0_#0F172A] pt-safe">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+        <button type="button" onClick={() => onTabChange('departments')} className="flex items-center gap-3 min-w-0 text-left">
+          <span className="flex items-center justify-center w-10 h-10 rounded-xl bg-white text-brand-800 border-[1.5px] border-slate-900 shrink-0">
+            <Building2 className="w-5 h-5" />
+          </span>
+          <span className="min-w-0">
+            <span className="block font-extrabold text-sm sm:text-base leading-tight truncate">{APP_CONFIG.appName}</span>
+            <span className="block text-[11px] text-brand-200 leading-tight truncate">{APP_CONFIG.collegeName}</span>
+          </span>
+        </button>
 
-            {/* Desktop Navigation Tabs */}
-            <nav className="hidden md:flex items-center space-x-1">
-              <button
-                type="button"
-                onClick={() => handleNavClick('departments')}
-                className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all ${
-                  activeTab === 'departments'
-                    ? 'bg-slate-800 text-indigo-400 border border-slate-700 shadow-sm'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
-                }`}
-              >
-                <Layers className="w-4 h-4" />
-                <span>Departments & Rooms</span>
-              </button>
+        <nav className="hidden md:flex items-center gap-1.5" aria-label="Main">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => onTabChange(t.id)}
+              className={`relative inline-flex items-center gap-2 px-4 min-h-[42px] rounded-xl text-sm font-bold transition ${
+                activeTab === t.id ? 'bg-white text-brand-800' : 'text-brand-100 hover:bg-white/10'
+              }`}
+            >
+              <t.icon className="w-4 h-4" />
+              {t.label}
+              {t.id === 'admin' && adminBadge > 0 && (
+                <span className="min-w-[20px] px-1.5 text-center rounded-full text-[10px] font-extrabold bg-red-600 text-white">{adminBadge}</span>
+              )}
+            </button>
+          ))}
+        </nav>
 
-              <button
-                type="button"
-                onClick={() => handleNavClick('my-bookings')}
-                className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all ${
-                  activeTab === 'my-bookings'
-                    ? 'bg-slate-800 text-indigo-400 border border-slate-700 shadow-sm'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
-                }`}
-              >
-                <CalendarCheck className="w-4 h-4" />
-                <span>My Bookings</span>
-              </button>
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            className="flex items-center gap-2 pl-1 pr-2 min-h-[44px] rounded-xl hover:bg-white/10"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+          >
+            <span className="w-9 h-9 rounded-full bg-white text-brand-800 font-extrabold text-sm flex items-center justify-center border-[1.5px] border-slate-900">
+              {initial}
+            </span>
+            <span className="hidden sm:block text-left max-w-[160px]">
+              <span className="block text-sm font-bold leading-tight truncate">{profile?.full_name || 'Staff member'}</span>
+              <span className="block text-[11px] text-brand-200 leading-tight truncate">{profile?.role === 'admin' ? 'Administrator' : profile?.designation || 'Staff'}</span>
+            </span>
+            <ChevronDown className="w-4 h-4 text-brand-200" />
+          </button>
 
-              {isAdmin && (
+          {menuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} aria-hidden="true" />
+              <div role="menu" className="absolute right-0 mt-2 w-64 z-50 bg-white text-slate-900 border-[1.5px] border-slate-800 rounded-2xl shadow-elev overflow-hidden animate-fade-in">
+                <div className="p-4 border-b border-slate-200">
+                  <div className="font-extrabold text-sm truncate">{profile?.full_name || 'Staff member'}</div>
+                  <div className="text-xs text-slate-500 truncate">{user?.email}</div>
+                  <div className="text-xs text-brand-700 font-bold mt-1">{profile?.role === 'admin' ? 'Administrator' : profile?.designation || 'Staff'}</div>
+                </div>
                 <button
                   type="button"
-                  onClick={() => handleNavClick('admin')}
-                  className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === 'admin'
-                      ? 'bg-indigo-950/80 text-indigo-300 border border-indigo-700/60 shadow-sm'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
-                  }`}
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    signOut()
+                  }}
+                  className="w-full flex items-center gap-2.5 px-4 min-h-[48px] text-sm font-bold text-red-700 hover:bg-red-50"
                 >
-                  <Shield className="w-4 h-4 text-indigo-400" />
-                  <span>Admin Panel</span>
+                  <LogOut className="w-4 h-4" />
+                  Sign out
                 </button>
-              )}
-            </nav>
-          </div>
-
-          {/* Right: User Profile & Actions */}
-          <div className="hidden md:flex items-center gap-4">
-            <div className="flex items-center gap-3 pl-3 py-1 pr-1 border-l border-slate-800">
-              <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 text-xs font-semibold">
-                {profile?.full_name ? profile.full_name.charAt(0).toUpperCase() : <User className="w-4 h-4" />}
               </div>
-              <div className="text-left">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-slate-200 leading-tight">
-                    {profile?.full_name || 'Staff Member'}
-                  </span>
-                  {profile?.role === 'admin' ? (
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                      Admin
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
-                      Staff
-                    </span>
-                  )}
-                </div>
-                <span className="text-[11px] text-slate-400 block leading-tight">
-                  {profile?.designation || user?.email}
-                </span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleLogout}
-              title="Sign Out"
-              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition border border-transparent hover:border-slate-700"
-            >
-              <LogOut className="w-4 h-4" />
-              <span>Logout</span>
-            </button>
-          </div>
-
-          {/* Mobile Menu Button */}
-          <div className="flex md:hidden items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 focus:outline-none"
-            >
-              {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-            </button>
-          </div>
+            </>
+          )}
         </div>
       </div>
-
-      {/* Mobile Menu Dropdown */}
-      {mobileMenuOpen && (
-        <div className="md:hidden border-t border-slate-800 bg-slate-900 px-4 pt-3 pb-4 space-y-3">
-          {/* User Info Bar */}
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-            <div>
-              <div className="text-sm font-semibold text-white flex items-center gap-2">
-                {profile?.full_name || 'Staff Member'}
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                  profile?.role === 'admin'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'bg-slate-800 text-slate-300'
-                }`}>
-                  {profile?.role === 'admin' ? 'Admin' : 'Staff'}
-                </span>
-              </div>
-              <div className="text-xs text-slate-400">
-                {profile?.designation || user?.email}
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="p-2 text-slate-400 hover:text-red-400 rounded-lg"
-            >
-              <LogOut className="w-5 h-5" />
-            </button>
-          </div>
-
-          {/* Navigation Links */}
-          <div className="space-y-1">
-            <button
-              type="button"
-              onClick={() => handleNavClick('departments')}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium ${
-                activeTab === 'departments'
-                  ? 'bg-slate-800 text-indigo-400'
-                  : 'text-slate-300 hover:bg-slate-800/60'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <Layers className="w-4 h-4" />
-                Departments & Rooms
-              </span>
-              <ChevronRight className="w-4 h-4 text-slate-500" />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleNavClick('my-bookings')}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium ${
-                activeTab === 'my-bookings'
-                  ? 'bg-slate-800 text-indigo-400'
-                  : 'text-slate-300 hover:bg-slate-800/60'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <CalendarCheck className="w-4 h-4" />
-                My Bookings
-              </span>
-              <ChevronRight className="w-4 h-4 text-slate-500" />
-            </button>
-
-            {isAdmin && (
-              <button
-                type="button"
-                onClick={() => handleNavClick('admin')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium ${
-                  activeTab === 'admin'
-                    ? 'bg-indigo-950 text-indigo-300'
-                    : 'text-slate-300 hover:bg-slate-800/60'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-indigo-400" />
-                  Admin Panel
-                </span>
-                <ChevronRight className="w-4 h-4 text-slate-500" />
-              </button>
-            )}
-          </div>
-        </div>
-      )}
     </header>
+  )
+}
+
+// Phone navigation: same three destinations as the desktop tabs, in thumb reach.
+export function BottomNav({ activeTab, onTabChange, adminBadge = 0 }) {
+  const { isAdmin } = useAuth()
+  const tabs = useTabs(isAdmin)
+  return (
+    <nav
+      aria-label="Main"
+      className="md:hidden fixed bottom-0 inset-x-0 z-50 bg-white border-t-[1.5px] border-slate-900 shadow-[0_-3px_0_0_rgba(15,23,42,0.12)] pb-safe"
+    >
+      <div className="grid" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
+        {tabs.map((t) => {
+          const active = activeTab === t.id
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => onTabChange(t.id)}
+              aria-current={active ? 'page' : undefined}
+              className="relative flex flex-col items-center justify-center gap-1 min-h-[60px] text-[11px] font-bold"
+            >
+              <span className={`flex items-center justify-center w-14 h-8 rounded-full transition ${active ? 'bg-brand-700 text-white' : 'text-slate-500'}`}>
+                <t.icon className="w-5 h-5" />
+              </span>
+              <span className={active ? 'text-brand-800' : 'text-slate-500'}>{t.label}</span>
+              {t.id === 'admin' && adminBadge > 0 && (
+                <span className="absolute top-1.5 left-1/2 ml-3 min-w-[18px] px-1 text-center rounded-full text-[10px] font-extrabold bg-red-600 text-white">{adminBadge}</span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </nav>
   )
 }
